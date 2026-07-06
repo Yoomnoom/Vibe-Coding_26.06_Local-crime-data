@@ -113,38 +113,46 @@ tab1, tab2 = st.tabs(["📊 전체 통계", "🏠 우리 동네 안전지도"])
 # ====================================================================
 with tab1:
     st.sidebar.header("필터 (전체 통계 탭)")
+    st.sidebar.caption("💡 아무 것도 선택하지 않으면 '전체'로 간주합니다. 여러 개를 함께 선택할 수 있습니다.")
 
-    대분류_목록 = ["전체"] + sorted(df["범죄대분류"].unique().tolist())
-    selected_대분류 = st.sidebar.selectbox("범죄 대분류", 대분류_목록)
+    대분류_목록 = sorted(df["범죄대분류"].unique().tolist())
+    selected_대분류_list = st.sidebar.multiselect("범죄 대분류 (복수 선택 가능)", 대분류_목록)
 
-    filtered_by_major = df if selected_대분류 == "전체" else df[df["범죄대분류"] == selected_대분류]
-
-    중분류_목록 = ["전체"] + sorted(filtered_by_major["범죄중분류"].unique().tolist())
-    selected_중분류 = st.sidebar.selectbox("범죄 중분류", 중분류_목록)
-
-    filtered_df = (
-        filtered_by_major if selected_중분류 == "전체"
-        else filtered_by_major[filtered_by_major["범죄중분류"] == selected_중분류]
+    filtered_by_major = (
+        df if not selected_대분류_list else df[df["범죄대분류"].isin(selected_대분류_list)]
     )
 
-    시도_목록 = ["전체"] + sorted(region_info["시도"].unique().tolist())
-    selected_시도 = st.sidebar.selectbox("시/도", 시도_목록)
+    중분류_목록 = sorted(filtered_by_major["범죄중분류"].unique().tolist())
+    selected_중분류_list = st.sidebar.multiselect("범죄 중분류 (복수 선택 가능)", 중분류_목록)
 
-    if selected_시도 == "전체":
-        시군구_목록 = ["전체"]
-    else:
-        시군구_목록 = ["전체"] + sorted(
-            region_info.loc[region_info["시도"] == selected_시도, "시군구"].dropna().tolist()
-        )
-    selected_시군구 = st.sidebar.selectbox("시/군/구", 시군구_목록)
+    filtered_df = (
+        filtered_by_major if not selected_중분류_list
+        else filtered_by_major[filtered_by_major["범죄중분류"].isin(selected_중분류_list)]
+    )
 
-    # 이 탭에서 특정 지역을 콕 짚어 고르면, 안전지도 탭 기본값도 그 지역으로 맞춘다.
-    if selected_시도 == "세종시":
-        tab1_picked_region = "세종시"
-    elif selected_시도 != "전체" and selected_시군구 != "전체":
-        tab1_picked_region = f"{selected_시도} {selected_시군구}"
+    시도_목록 = sorted(region_info["시도"].unique().tolist())
+    selected_시도_list = st.sidebar.multiselect("시/도 (복수 선택 가능)", 시도_목록)
+
+    if selected_시도_list:
+        시군구_후보 = region_info[region_info["시도"].isin(selected_시도_list)]
     else:
-        tab1_picked_region = None
+        시군구_후보 = region_info
+    시군구_옵션 = sorted(시군구_후보["컬럼명"].tolist())
+    selected_시군구_list = st.sidebar.multiselect(
+        "시/군/구 (복수 선택 가능, 전체 지역명으로 표시)", 시군구_옵션
+    )
+
+    top_n = st.sidebar.slider("상위 지역 개수 (Top N)", min_value=5, max_value=30, value=15)
+
+    if selected_시군구_list:
+        target_cols = selected_시군구_list
+    elif selected_시도_list:
+        target_cols = region_info.loc[region_info["시도"].isin(selected_시도_list), "컬럼명"].tolist()
+    else:
+        target_cols = region_info["컬럼명"].tolist()
+
+    # 시/군/구를 딱 하나만 콕 짚었을 때만, 안전지도 탭 기본값도 그 지역으로 맞춘다.
+    tab1_picked_region = selected_시군구_list[0] if len(selected_시군구_list) == 1 else None
 
     if tab1_picked_region and tab1_picked_region != st.session_state.get("_last_tab1_region"):
         st.session_state["_last_tab1_region"] = tab1_picked_region
@@ -152,17 +160,6 @@ with tab1:
     elif tab1_picked_region is None:
         st.session_state["_last_tab1_region"] = None
 
-    top_n = st.sidebar.slider("상위 지역 개수 (Top N)", min_value=5, max_value=30, value=15)
-
-    if selected_시도 == "전체":
-        target_cols = region_info["컬럼명"].tolist()
-    elif selected_시군구 == "전체":
-        target_cols = region_info.loc[region_info["시도"] == selected_시도, "컬럼명"].tolist()
-    else:
-        target_cols = region_info.loc[
-            (region_info["시도"] == selected_시도) & (region_info["시군구"] == selected_시군구),
-            "컬럼명",
-        ].tolist()
 
     region_sum = filtered_df[target_cols].sum().sort_values(ascending=False)
     region_sum_df = region_sum.reset_index()
@@ -183,14 +180,17 @@ with tab1:
     st.plotly_chart(fig_bar, use_container_width=True)
 
     # 대분류를 특정 값으로 좁혔다면 그 안의 중분류로, 아니면 대분류 기준으로 구성비를 본다.
-    if selected_대분류 == "전체":
+    if not selected_대분류_list:
         comp_source, comp_group_col = df, "범죄대분류"
     else:
         comp_source, comp_group_col = filtered_by_major, "범죄중분류"
 
-    scope_label = "전국" if selected_시도 == "전체" else (
-        selected_시도 if selected_시군구 == "전체" else f"{selected_시도} {selected_시군구}"
-    )
+    if not selected_시도_list:
+        scope_label = "전국"
+    elif len(selected_시도_list) == 1:
+        scope_label = selected_시도_list[0] if not selected_시군구_list else selected_시군구_list[0]
+    else:
+        scope_label = "선택한 " + "·".join(selected_시도_list)
 
     st.subheader(f"{scope_label} {comp_group_col}별 발생 건수 (선택한 필터 반영)")
     comp_sum = comp_source.groupby(comp_group_col)[target_cols].sum().sum(axis=1).sort_values(ascending=False)
@@ -201,20 +201,19 @@ with tab1:
 
     st.subheader(f"시/도 × {comp_group_col} 히트맵 (선택한 범죄 필터 반영)")
     heat_categories = comp_source[comp_group_col].unique()
-    sido_major = pd.DataFrame(index=sorted(region_info["시도"].unique()))
+    heat_sido_index = sorted(selected_시도_list) if selected_시도_list else sorted(region_info["시도"].unique())
+    sido_major = pd.DataFrame(index=heat_sido_index)
     for sido in sido_major.index:
         cols = region_info.loc[region_info["시도"] == sido, "컬럼명"].tolist()
         sido_major.loc[sido, heat_categories] = (
             comp_source.groupby(comp_group_col)[cols].sum().sum(axis=1)
         )
     sido_major = sido_major.astype(float)
-    if selected_시도 != "전체":
-        sido_major = sido_major.loc[[selected_시도]]
     fig_heat = px.imshow(
         sido_major, aspect="auto", color_continuous_scale="YlOrRd",
         labels=dict(x=comp_group_col, y="시/도", color="발생건수"),
     )
-    fig_heat.update_layout(height=700 if selected_시도 == "전체" else 250)
+    fig_heat.update_layout(height=700 if len(heat_sido_index) > 3 else 250)
     st.plotly_chart(fig_heat, use_container_width=True)
 
     st.subheader("원본 데이터 보기")
